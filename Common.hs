@@ -2,16 +2,14 @@
 module Common where
 
 import qualified Control.Exception as Exception
+import qualified Compat.TempFile as Compat
 import Control.Monad            ( when )
 import Data.Char                ( isSpace )
 import Data.List                ( foldl' )
 import System.IO
 #if defined(mingw32_HOST_OS)
 import Control.Concurrent       ( threadDelay )
-import Data.Bits                ( xor )
 import System.IO.Error          ( isPermissionError )
-import System.CPUTime           ( getCPUTime )
-import System.FilePath          ( (</>) )
 #endif
 import System.Process           ( createProcess, waitForProcess
                                 , proc, CreateProcess(..), StdStream(..) )
@@ -126,43 +124,11 @@ withTempFile :: FilePath -- ^ Temp dir to create the file in
              -> String   -- ^ Template for temp file
              -> Int      -- ^ Random seed for tmp name
              -> (FilePath -> Handle -> IO a) -> IO a
-#if !defined(mingw32_HOST_OS)
 withTempFile tmpDir _outBase template _seed action = do
   Exception.bracket
-    (openTempFile tmpDir template)
-    (\(name, handle) -> do hClose handle
-                           removeFile $ name)
+    (Compat.openTempFile tmpDir template)
+    (\(name, handle) -> finallyRemove name $ hClose handle)
     (uncurry action)
-#else
-withTempFile tmpDir outBase template seed action = do
-  -- openTempFile isn't atomic under Windows. This means it's unsuitable for
-  -- use on Windows for creating random temp files.  Instead we'll try to create
-  -- a reasonably random name based on the current outBase.  If the
-  -- Sanity check to see that nothing invalidated this assumption is violated
-  -- then we retry a few times otherwise an error is raised.
-  rspFile <- findTmp 5
-  Exception.bracket
-    (openFile rspFile ReadWriteMode)
-    (\handle -> finallyRemove rspFile $ hClose handle)
-    (action rspFile)
-    where findTmp :: Int -> IO FilePath
-          findTmp 0 = die "Could not find unallocated temp file\n"
-          findTmp n = do
-            -- Generate a reasonable random number for token to prevent clashes if this
-            -- function is used recursively.
-            cpuTime <- getCPUTime
-            let token = show $ (fromIntegral seed) `xor` cpuTime
-                file = tmpDir </> (outBase ++ token ++ template)
-            -- Because of the resolution of the CPU timers there exists a small
-            -- possibility that multiple nested calls to withTempFile get the
-            -- same "token".  To reduce the risk to almost zero we immediately
-            -- create the file to reserve it.  If the file already exists we try
-            -- again.
-            res <- Exception.try $ openFile file ReadMode
-            case (res :: Either Exception.SomeException Handle) of
-              Left  _ -> return file
-              Right h -> hClose h >> findTmp (n-1)
-#endif
 
 withResponseFile ::
      FilePath           -- ^ Working directory to create response file in.
